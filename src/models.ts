@@ -12,7 +12,7 @@ export interface Guardian extends User {
   role: 'GUARDIAN';
   birthDate: string;
   address: string;
-  studentIds: string[];
+  studentIds: string[];                                                                                                                                                                                                                 
 }
 
 export interface Student extends User {
@@ -89,4 +89,55 @@ export interface StudyMaterial {
 
 export interface LoginInput { phone: string; password: string }
 export interface AuthSession { token: string; user: User }
+export type UserProfile = 'PROFESSOR' | 'RESPONSAVEL' | 'ALUNO';
+
+export interface AuthUser {
+  id: number;
+  nome_completo: string;
+  telefone: string;
+  data_nascimento: string;
+  endereco: string;
+  perfil: UserProfile;
+  ativo?: boolean;
+  criado_em?: string;
+  atualizado_em?: string;
+}
+
+export interface AuthLoginInput { telefone: string; senha: string }
+export interface AuthSessionResponse { token: string; user: AuthUser }
+
+// GET /auth/me e os registros de conta (responsável/aluno maior) devolvem { user }, sem token
+export interface AuthUserResponse { user: AuthUser }
+
+// POST /auth/register/responsavel — só estes 5 campos são aceitos pela API (sem cpf/email).
+// Não retorna token: após o cadastro é preciso chamar login() com as mesmas credenciais.
+export interface RegisterGuardianInput {
+  nome_completo: string;
+  telefone: string;
+  senha: string;
+  data_nascimento: string;
+  endereco: string;
+}
+
+export interface RegisterStudentInput {
+  nome_completo: string;
+  data_nascimento: string;
+  parentesco?: string;
+  telefone?: string;
+  senha?: string;
+  endereco?: string;
+}
+
+export interface RegisteredMinorStudent {
+  id: number;
+  nome_completo: string;
+  data_nascimento: string;
+  telefone?: string;
+  endereco?: string;
+}
+
+export interface RegisterStudentResponse {
+  user?: AuthUser;
+  aluno?: RegisteredMinorStudent;
+}
 

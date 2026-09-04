@@ -1,9 +1,33 @@
 import { StatusBar } from 'expo-status-bar';
-import { useState } from 'react';
-import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AuthProvider, useAuth } from './src/contexts/AuthContext';
+import type { UserProfile } from './src/models';
+import { getApiErrorMessage } from './src/utils/handleApiError';
 
 type Screen = 'login' | 'forgotPassword' | 'create' | 'guardian' | 'studentForm' | 'guardianHome' | 'studentHome' | 'studentProfile' | 'classes' | 'attendance' | 'notices' | 'materials' | 'teacherHome' | 'studentsAdmin' | 'guardiansAdmin' | 'classesAdmin' | 'classForm' | 'beltForm' | 'noticeForm' | 'materialForm' | 'rollCall' | 'ranking' | 'settings';
 type Go = (screen: Screen) => void;
+
+// Tela inicial de cada perfil, usada para redirecionar após login/cadastro.
+const homeScreenFor = (perfil: UserProfile): Screen => {
+  if (perfil === 'PROFESSOR') return 'teacherHome';
+  if (perfil === 'RESPONSAVEL') return 'guardianHome';
+  return 'studentHome';
+};
+
+// Calcula idade a partir de uma data no formato dd/mm/aaaa; retorna null se inválida/incompleta.
+function calculateAge(value: string): number | null {
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(value.trim());
+  if (!match) return null;
+  const [, day, month, year] = match;
+  const birthDate = new Date(Number(year), Number(month) - 1, Number(day));
+  if (Number.isNaN(birthDate.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - birthDate.getFullYear();
+  const hadBirthdayThisYear = today.getMonth() > birthDate.getMonth() || (today.getMonth() === birthDate.getMonth() && today.getDate() >= birthDate.getDate());
+  if (!hadBirthdayThisYear) age -= 1;
+  return age;
+}
 
 // Cores principais do aplicativo.
 const BLUE = '#0754ef';
@@ -19,11 +43,32 @@ const labels: Record<Screen, string> = {
 };
 
 export default function App() {
+  return <AuthProvider><AppShell /></AuthProvider>;
+}
+
+// Tela exibida enquanto a sessão salva é validada — nunca mostrar o login antes dessa checagem.
+function Splash() {
+  return <SafeAreaView style={s.safe}><View style={[s.app, s.flex, { justifyContent: 'center', alignItems: 'center', gap: 16 }]}><Text style={s.logoIcon}>🥋</Text><ActivityIndicator color={BLUE} size="large" /></View></SafeAreaView>;
+}
+
+function AppShell() {
+  const { user, isLoading } = useAuth();
   // Controla a tela atual e o botão de voltar.
   const [screen, setScreen] = useState<Screen>('login');
   const [history, setHistory] = useState<Screen[]>([]);
   const go: Go = (next) => { setHistory((value) => [...value, screen]); setScreen(next); };
   const back = () => { setScreen(history.at(-1) ?? 'login'); setHistory((value) => value.slice(0, -1)); };
+
+  // Redireciona para a tela inicial do perfil ao logar, e para o login ao deslogar
+  // (inclui a sessão expirada tratada pelo interceptor 401 do cliente HTTP).
+  useEffect(() => {
+    if (isLoading) return;
+    setScreen(user ? homeScreenFor(user.perfil) : 'login');
+    setHistory([]);
+  }, [isLoading, user]);
+
+  if (isLoading) return <Splash />;
+
   const screens: Record<Screen, React.ReactNode> = {
     login: <Login go={go} />, forgotPassword: <ForgotPassword go={go} back={back} />, create: <Create go={go} back={back} />, guardian: <Guardian go={go} back={back} />,
     studentForm: <StudentForm go={go} back={back} />, guardianHome: <GuardianHome go={go} />, studentHome: <StudentHome go={go} />, studentProfile: <StudentProfile go={go} back={back} />, classes: <Classes go={go} back={back} />,
@@ -36,7 +81,30 @@ export default function App() {
 
 // Tela de login.
 function Login({ go }: { go: Go }) {
-  return <Page><View style={s.logo}><Text style={s.logoIcon}>🥋</Text><Text style={s.logoText}>IMPACTO SOCIAL</Text><Text style={s.logoSub}>OFICINA DE TAEKWONDO</Text></View><Title center>Bem-vindo!</Title><Text style={s.centerText}>Acompanhe, evolua e faça parte dessa grande família.</Text><Input placeholder="Telefone" keyboardType="phone-pad" /><Input placeholder="Senha" secureTextEntry /><Primary label="Entrar como aluno" onPress={() => go('studentHome')} /><Link label="Entrar como responsável (demonstração)" onPress={() => go('guardianHome')} /><Link label="Entrar como professor (demonstração)" onPress={() => go('teacherHome')} /><Link label="Esqueceu sua senha?" onPress={() => go('forgotPassword')} /><Text style={s.centerText}>Não tem uma conta?</Text><Outline label="Criar conta" onPress={() => go('create')} /></Page>;
+  const { login } = useAuth();
+  const [telefone, setTelefone] = useState('');
+  const [senha, setSenha] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [slow, setSlow] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleLogin = async () => {
+    setError('');
+    setLoading(true);
+    // Cold start do plano free do Render: avisa o usuário se a resposta demorar.
+    const slowTimer = setTimeout(() => setSlow(true), 4000);
+    try {
+      await login(telefone, senha);
+    } catch (err) {
+      setError(getApiErrorMessage(err));
+    } finally {
+      clearTimeout(slowTimer);
+      setLoading(false);
+      setSlow(false);
+    }
+  };
+
+  return <Page><View style={s.logo}><Text style={s.logoIcon}>🥋</Text><Text style={s.logoText}>IMPACTO SOCIAL</Text><Text style={s.logoSub}>OFICINA DE TAEKWONDO</Text></View><Title center>Bem-vindo!</Title><Text style={s.centerText}>Acompanhe, evolua e faça parte dessa grande família.</Text><Input placeholder="Telefone" keyboardType="phone-pad" value={telefone} onChangeText={setTelefone} /><Input placeholder="Senha" secureTextEntry value={senha} onChangeText={setSenha} />{!!error && <Feedback tone="error">{error}</Feedback>}{slow && <Feedback>Conectando ao servidor, isso pode levar até um minuto na primeira vez do dia...</Feedback>}<Primary label={loading ? 'Entrando...' : 'Entrar'} onPress={handleLogin} disabled={loading} /><Link label="Esqueceu sua senha?" onPress={() => go('forgotPassword')} /><Text style={s.centerText}>Não tem uma conta?</Text><Outline label="Criar conta" onPress={() => go('create')} /></Page>;
 }
 
 // Tela de recuperação de senha.
@@ -53,22 +121,92 @@ function Create({ go, back }: Props) {
 
 // Formulário de cadastro do responsável.
 function Guardian({ go, back }: Props) {
-  return <Form title="Cadastro de responsável" step="1 de 4" back={back}><Field label="Nome completo *" placeholder="Digite o nome completo" /><Field label="CPF *" placeholder="000.000.000-00" keyboardType="numeric" /><Field label="Telefone *" placeholder="(00) 00000-0000" keyboardType="phone-pad" /><Field label="E-mail" placeholder="nome@exemplo.com" keyboardType="email-address" autoCapitalize="none" /><Field label="Data de nascimento *" placeholder="dd/mm/aaaa" /><Field label="CEP" placeholder="00000-000" keyboardType="numeric" /><Field label="Endereço *" placeholder="Rua, número, bairro, cidade" /><Field label="Senha *" placeholder="Mínimo de 8 caracteres" secureTextEntry /><Field label="Confirmar senha *" placeholder="Repita a senha" secureTextEntry /><Outline label="＋ ADICIONAR ALUNO" onPress={() => go('studentForm')} /><Primary label="Salvar responsável" onPress={() => go('guardianHome')} /></Form>;
+  const { registerGuardian } = useAuth();
+  const [nomeCompleto, setNomeCompleto] = useState('');
+  const [telefone, setTelefone] = useState('');
+  const [dataNascimento, setDataNascimento] = useState('');
+  const [endereco, setEndereco] = useState('');
+  const [senha, setSenha] = useState('');
+  const [confirmarSenha, setConfirmarSenha] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async () => {
+    if (senha !== confirmarSenha) { setError('As senhas não coincidem.'); return; }
+    setError('');
+    setLoading(true);
+    try {
+      await registerGuardian({ nome_completo: nomeCompleto, telefone, data_nascimento: dataNascimento, endereco, senha });
+    } catch (err) {
+      setError(getApiErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return <Form title="Cadastro de responsável" step="1 de 4" back={back}><Field label="Nome completo *" placeholder="Digite o nome completo" value={nomeCompleto} onChangeText={setNomeCompleto} /><Field label="Telefone *" placeholder="(00) 00000-0000" keyboardType="phone-pad" value={telefone} onChangeText={setTelefone} /><Field label="Data de nascimento *" placeholder="dd/mm/aaaa" value={dataNascimento} onChangeText={setDataNascimento} /><Field label="Endereço *" placeholder="Rua, número, bairro, cidade" value={endereco} onChangeText={setEndereco} /><Field label="Senha *" placeholder="Mínimo de 8 caracteres" secureTextEntry value={senha} onChangeText={setSenha} /><Field label="Confirmar senha *" placeholder="Repita a senha" secureTextEntry value={confirmarSenha} onChangeText={setConfirmarSenha} />{!!error && <Feedback tone="error">{error}</Feedback>}<Outline label="＋ ADICIONAR ALUNO" onPress={() => go('studentForm')} /><Primary label={loading ? 'Salvando...' : 'Salvar responsável'} onPress={handleSubmit} disabled={loading} /></Form>;
 }
 
 // Formulário de cadastro do aluno.
 function StudentForm({ go, back }: Props) {
-  return <Form title="Cadastro de aluno" step="2 de 4" back={back}><Field label="Nome completo *" placeholder="Digite o nome completo" /><Field label="CPF" placeholder="000.000.000-00" keyboardType="numeric" /><Field label="Telefone" placeholder="(00) 00000-0000" keyboardType="phone-pad" /><Field label="Data de nascimento *" placeholder="dd/mm/aaaa" /><Field label="Endereço *" placeholder="Rua, número, bairro, cidade" /><Field label="Responsável" placeholder="Selecione o responsável  ⌄" /><Field label="Turma" placeholder="Selecione a turma  ⌄" /><Field label="Faixa atual (opcional)" placeholder="Selecione a faixa  ⌄" /><Field label="Observações médicas" placeholder="Alergias, restrições ou cuidados" multiline numberOfLines={3} /><Primary label="Salvar aluno" onPress={() => go('studentHome')} /></Form>;
+  const { user, registerStudent } = useAuth();
+  const [nomeCompleto, setNomeCompleto] = useState('');
+  const [telefone, setTelefone] = useState('');
+  const [dataNascimento, setDataNascimento] = useState('');
+  const [endereco, setEndereco] = useState('');
+  const [senha, setSenha] = useState('');
+  const [parentesco, setParentesco] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+
+  const age = calculateAge(dataNascimento);
+  const isMinor = age !== null && age < 18;
+  const hasGuardianSession = user?.perfil === 'RESPONSAVEL';
+  const blocked = isMinor && !hasGuardianSession;
+
+  const handleSubmit = async () => {
+    setError('');
+    setSuccess(false);
+    setLoading(true);
+    try {
+      // responsavel_id não é enviado: para aluno menor a API deriva do JWT do responsável logado.
+      await registerStudent({
+        nome_completo: nomeCompleto,
+        data_nascimento: dataNascimento,
+        parentesco: isMinor ? parentesco : undefined,
+        telefone: isMinor ? undefined : telefone,
+        senha: isMinor ? undefined : senha,
+        endereco: isMinor ? undefined : endereco,
+      });
+      // Aluno menor: a sessão do responsável não muda, então nada navega sozinho — sem este
+      // aviso e sem limpar o formulário, o cadastro parecia não ter acontecido (ver Bloco 6).
+      // Aluno maior (autocadastro): o login() dentro de registerStudent já leva para a home.
+      if (hasGuardianSession) {
+        setSuccess(true);
+        setNomeCompleto(''); setDataNascimento(''); setParentesco('');
+        setTelefone(''); setSenha(''); setEndereco('');
+      }
+    } catch (err) {
+      setError(getApiErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return <Form title="Cadastro de aluno" step="2 de 4" back={back}><Field label="Nome completo *" placeholder="Digite o nome completo" value={nomeCompleto} onChangeText={setNomeCompleto} /><Field label="Data de nascimento *" placeholder="dd/mm/aaaa" value={dataNascimento} onChangeText={setDataNascimento} />{isMinor && <Field label="Parentesco do responsável *" placeholder="Pai, mãe, avó, tutor legal..." value={parentesco} onChangeText={setParentesco} />}{!isMinor && <Field label="Telefone" placeholder="(00) 00000-0000" keyboardType="phone-pad" value={telefone} onChangeText={setTelefone} />}{!isMinor && <Field label="Senha *" placeholder="Mínimo de 8 caracteres" secureTextEntry value={senha} onChangeText={setSenha} />}{!isMinor && <Field label="Endereço *" placeholder="Rua, número, bairro, cidade" value={endereco} onChangeText={setEndereco} />}<Field label="Turma" placeholder="Selecione a turma  ⌄" /><Field label="Faixa atual (opcional)" placeholder="Selecione a faixa  ⌄" /><Field label="Observações médicas" placeholder="Alergias, restrições ou cuidados" multiline numberOfLines={3} />{blocked && <Feedback tone="error">Aluno menor de idade: é necessário que o responsável esteja logado para concluir este cadastro.</Feedback>}{!!error && <Feedback tone="error">{error}</Feedback>}{success && <Feedback>Aluno cadastrado com sucesso!</Feedback>}<Primary label={loading ? 'Salvando...' : 'Salvar aluno'} onPress={handleSubmit} disabled={blocked || loading} /></Form>;
 }
 
 // Tela inicial do responsável.
 function GuardianHome({ go }: { go: Go }) {
-  return <StudentLayout go={go} current="guardianHome"><Title>Olá, responsável!</Title><Subtitle>Acompanhe os alunos vinculados à sua conta.</Subtitle><View style={s.profile}><Avatar /><View style={s.flex}><CardTitle>João Pedro</CardTitle><Text style={s.muted}>Turma: Juvenil • Faixa branca</Text><Link label="Ver dados do aluno ›" onPress={() => go('studentProfile')} /></View></View><View style={s.grid}><Menu icon="▣" label="Aulas" onPress={() => go('classes')} /><Menu icon="▥" label="Frequência" onPress={() => go('attendance')} /><Menu icon="◖" label="Comunicados" onPress={() => go('notices')} /><Menu icon="▤" label="Materiais" onPress={() => go('materials')} /></View><Outline label="＋ CADASTRAR OUTRO ALUNO" onPress={() => go('studentForm')} /></StudentLayout>;
+  const { user } = useAuth();
+  return <StudentLayout go={go} current="guardianHome"><Title>Olá, {user?.nome_completo}!</Title><Subtitle>Acompanhe os alunos vinculados à sua conta.</Subtitle><View style={s.profile}><Avatar /><View style={s.flex}><CardTitle>João Pedro</CardTitle><Text style={s.muted}>Turma: Juvenil • Faixa branca</Text><Link label="Ver dados do aluno ›" onPress={() => go('studentProfile')} /></View></View><View style={s.grid}><Menu icon="▣" label="Aulas" onPress={() => go('classes')} /><Menu icon="▥" label="Frequência" onPress={() => go('attendance')} /><Menu icon="◖" label="Comunicados" onPress={() => go('notices')} /><Menu icon="▤" label="Materiais" onPress={() => go('materials')} /></View><Outline label="＋ CADASTRAR OUTRO ALUNO" onPress={() => go('studentForm')} /></StudentLayout>;
 }
 
 // Tela inicial do aluno.
 function StudentHome({ go }: { go: Go }) {
-  return <StudentLayout go={go} current="studentHome"><Title>Olá, João Pedro!</Title><Subtitle>Acompanhe o seu desenvolvimento</Subtitle><View style={s.profile}><Avatar /><View style={s.flex}><CardTitle>João Pedro</CardTitle><Text style={s.muted}>Faixa atual: Branca - 10º gub</Text><Link label="Ver perfil ›" onPress={() => go('studentProfile')} /></View></View><View style={s.grid}><Menu icon="▣" label="Aulas" onPress={() => go('classes')} /><Menu icon="▥" label="Frequência" onPress={() => go('attendance')} /><Menu icon="◖" label="Comunicados" onPress={() => go('notices')} /><Menu icon="▤" label="Materiais" onPress={() => go('materials')} /></View><View style={s.motto}><Text style={s.mottoText}>DISCIPLINA HOJE,{`\n`}CONQUISTAS SEMPRE!</Text></View></StudentLayout>;
+  const { user } = useAuth();
+  return <StudentLayout go={go} current="studentHome"><Title>Olá, {user?.nome_completo}!</Title><Subtitle>Acompanhe o seu desenvolvimento</Subtitle><View style={s.profile}><Avatar /><View style={s.flex}><CardTitle>João Pedro</CardTitle><Text style={s.muted}>Faixa atual: Branca - 10º gub</Text><Link label="Ver perfil ›" onPress={() => go('studentProfile')} /></View></View><View style={s.grid}><Menu icon="▣" label="Aulas" onPress={() => go('classes')} /><Menu icon="▥" label="Frequência" onPress={() => go('attendance')} /><Menu icon="◖" label="Comunicados" onPress={() => go('notices')} /><Menu icon="▤" label="Materiais" onPress={() => go('materials')} /></View><View style={s.motto}><Text style={s.mottoText}>DISCIPLINA HOJE,{`\n`}CONQUISTAS SEMPRE!</Text></View></StudentLayout>;
 }
 
 // Tela de perfil do aluno.
@@ -101,7 +239,8 @@ function Materials({ go, back }: Props) {
 
 // Tela inicial do professor.
 function TeacherHome({ go }: { go: Go }) {
-  return <TeacherLayout go={go} current="teacherHome"><Title>Olá, Professor!</Title><Subtitle>Gerencie as atividades do projeto.</Subtitle><View style={s.grid}><Menu icon="●●" label="Alunos" onPress={() => go('studentsAdmin')} /><Menu icon="▣" label="Turmas e aulas" onPress={() => go('classesAdmin')} /><Menu icon="✓" label="Presenças" onPress={() => go('rollCall')} /><Menu icon="⌁" label="Faixas" onPress={() => go('beltForm')} /><Menu icon="◖" label="Comunicados" onPress={() => go('noticeForm')} /><Menu icon="▤" label="Materiais" onPress={() => go('materialForm')} /><Menu icon="♛" label="Ranking" onPress={() => go('ranking')} /><Menu icon="⚙" label="Configurações" onPress={() => go('settings')} /></View><Outline label="Gerenciar responsáveis" onPress={() => go('guardiansAdmin')} /></TeacherLayout>;
+  const { user } = useAuth();
+  return <TeacherLayout go={go} current="teacherHome"><Title>Olá, {user?.nome_completo}!</Title><Subtitle>Gerencie as atividades do projeto.</Subtitle><View style={s.grid}><Menu icon="●●" label="Alunos" onPress={() => go('studentsAdmin')} /><Menu icon="▣" label="Turmas e aulas" onPress={() => go('classesAdmin')} /><Menu icon="✓" label="Presenças" onPress={() => go('rollCall')} /><Menu icon="⌁" label="Faixas" onPress={() => go('beltForm')} /><Menu icon="◖" label="Comunicados" onPress={() => go('noticeForm')} /><Menu icon="▤" label="Materiais" onPress={() => go('materialForm')} /><Menu icon="♛" label="Ranking" onPress={() => go('ranking')} /><Menu icon="⚙" label="Configurações" onPress={() => go('settings')} /></View><Outline label="Gerenciar responsáveis" onPress={() => go('guardiansAdmin')} /></TeacherLayout>;
 }
 
 // Tela de gerenciamento dos alunos.
@@ -142,7 +281,8 @@ function MaterialForm({ go, back }: Props) {
 
 // Tela de configurações.
 function Settings({ go, back }: Props) {
-  return <TeacherLayout go={go} current="settings"><Back onPress={back} /><Title>Configurações</Title><Field label="Nome do projeto" value="Projeto Impacto Social" /><Field label="Telefone de contato" value="(51) 99999-0000" keyboardType="phone-pad" /><Field label="E-mail" value="contato@projeto.org" keyboardType="email-address" /><Field label="Endereço das aulas" value="Ginásio da comunidade" /><Field label="Nome do professor" value="Professor responsável" /><Primary label="Salvar configurações" /><Outline label="Sair da conta" onPress={() => go('login')} /></TeacherLayout>;
+  const { logout } = useAuth();
+  return <TeacherLayout go={go} current="settings"><Back onPress={back} /><Title>Configurações</Title><Field label="Nome do projeto" value="Projeto Impacto Social" /><Field label="Telefone de contato" value="(51) 99999-0000" keyboardType="phone-pad" /><Field label="E-mail" value="contato@projeto.org" keyboardType="email-address" /><Field label="Endereço das aulas" value="Ginásio da comunidade" /><Field label="Nome do professor" value="Professor responsável" /><Primary label="Salvar configurações" /><Outline label="Sair da conta" onPress={logout} /></TeacherLayout>;
 }
 
 // Tela da lista de presença.
@@ -176,7 +316,7 @@ function Back({ onPress }: { onPress: () => void }) { return <Pressable style={s
 function Input(props: React.ComponentProps<typeof TextInput>) { return <TextInput style={s.input} placeholderTextColor="#7a849a" {...props} />; }
 // Campo de formulário com título.
 function Field({ label, ...props }: { label: string } & React.ComponentProps<typeof TextInput>) { return <View style={s.field}><Text style={s.label}>{label}</Text><Input {...props} /></View>; }
-function Primary({ label, onPress }: { label: string; onPress?: () => void }) { return <Pressable style={s.primary} onPress={onPress}><Text style={s.primaryText}>{label}</Text></Pressable>; }
+function Primary({ label, onPress, disabled = false }: { label: string; onPress?: () => void; disabled?: boolean }) { return <Pressable style={[s.primary, disabled && s.disabled]} onPress={onPress} disabled={disabled}><Text style={s.primaryText}>{label}</Text></Pressable>; }
 function Outline({ label, onPress }: { label: string; onPress?: () => void }) { return <Pressable style={s.outline} onPress={onPress}><Text style={s.outlineText}>{label}</Text></Pressable>; }
 function Link({ label, onPress }: { label: string; onPress?: () => void }) { return <Pressable onPress={onPress}><Text style={s.link}>{label}</Text></Pressable>; }
 function Choice({ selected, icon, title, text, onPress }: { selected: boolean; icon: string; title: string; text: string; onPress: () => void }) { return <Pressable style={[s.choice, selected && s.selected]} onPress={onPress}><Icon>{icon}</Icon><View style={s.flex}><CardTitle>{title}</CardTitle><Text style={s.muted}>{text}</Text></View></Pressable>; }
@@ -184,7 +324,7 @@ function Choice({ selected, icon, title, text, onPress }: { selected: boolean; i
 function Menu({ icon, label, onPress }: { icon: string; label: string; onPress?: () => void }) { return <Pressable style={s.menu} onPress={onPress}><Icon>{icon}</Icon><Text style={s.menuLabel}>{label}</Text></Pressable>; }
 function Avatar({ small = false }: { small?: boolean }) { return <View style={[s.avatar, small && s.avatarSmall]}><Text style={[s.avatarDot, small && s.avatarDotSmall]}>●</Text></View>; }
 function Stat({ label, value, green = false }: { label: string; value: string; green?: boolean }) { return <View style={s.stat}><Text style={s.statLabel}>{label}</Text><Text style={[s.statValue, green && s.green]}>{value}</Text></View>; }
-function Feedback({ children }: { children: React.ReactNode }) { return <View style={s.feedback}><Text style={s.feedbackText}>{children}</Text></View>; }
+function Feedback({ children, tone = 'success' }: { children: React.ReactNode; tone?: 'success' | 'error' }) { return <View style={[s.feedback, tone === 'error' && s.feedbackError]}><Text style={[s.feedbackText, tone === 'error' && s.feedbackTextError]}>{children}</Text></View>; }
 function Info({ label, value }: { label: string; value: string }) { return <View style={s.info}><Text style={s.infoLabel}>{label}</Text><Text style={s.infoValue}>{value}</Text></View>; }
 function EntityRow({ title, detail, onPress }: { title: string; detail: string; onPress?: () => void }) { return <Pressable style={s.entity} onPress={onPress}><Avatar small /><View style={s.flex}><CardTitle>{title}</CardTitle><Text style={s.muted}>{detail}</Text></View><Text style={s.chevron}>›</Text></Pressable>; }
 // Menu flutuante com acesso a todas as telas.
@@ -192,5 +332,5 @@ function DemoMenu({ current, go }: { current: Screen; go: Go }) { const [open, s
 
 // Estilos visuais do aplicativo.
 const s = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#fff' }, app: { flex: 1, width: '100%', maxWidth: 640, alignSelf: 'center' }, flex: { flex: 1 }, page: { padding: 28, paddingBottom: 42, gap: 16 }, title: { color: NAVY, fontSize: 34, lineHeight: 42, fontWeight: '800', marginVertical: 8 }, center: { textAlign: 'center' }, subtitle: { color: NAVY, fontSize: 20, lineHeight: 28, marginBottom: 12 }, centerText: { color: NAVY, fontSize: 18, lineHeight: 27, textAlign: 'center' }, logo: { alignItems: 'center', marginTop: 12 }, logoIcon: { fontSize: 72 }, logoText: { color: BLUE, fontSize: 27, fontWeight: '900', fontStyle: 'italic' }, logoSub: { color: NAVY, fontWeight: '700', letterSpacing: 1 }, input: { minHeight: 58, borderWidth: 1, borderColor: BORDER, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 12, color: NAVY, backgroundColor: '#fff', fontSize: 17, textAlignVertical: 'top' }, field: { gap: 8, marginBottom: 2 }, label: { color: NAVY, fontWeight: '700', fontSize: 17 }, primary: { minHeight: 58, borderRadius: 12, backgroundColor: BLUE, justifyContent: 'center', alignItems: 'center', marginTop: 8, padding: 12 }, primaryText: { color: '#fff', fontSize: 19, fontWeight: '800', textAlign: 'center' }, outline: { minHeight: 58, borderRadius: 12, borderWidth: 2, borderColor: BLUE, justifyContent: 'center', alignItems: 'center', padding: 12 }, outlineText: { color: BLUE, fontSize: 18, fontWeight: '800', textAlign: 'center' }, link: { color: BLUE, textAlign: 'center', paddingVertical: 5, fontSize: 16, fontWeight: '700' }, formHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, step: { color: BLUE, fontWeight: '700' }, back: { width: 44, height: 44, justifyContent: 'center' }, backText: { color: NAVY, fontSize: 44, lineHeight: 44 }, choice: { flexDirection: 'row', alignItems: 'center', gap: 20, minHeight: 160, padding: 24, borderWidth: 1, borderColor: BORDER, borderRadius: 16 }, selected: { borderWidth: 2, borderColor: BLUE }, icon: { color: BLUE, fontSize: 40, fontWeight: '800' }, cardTitle: { color: NAVY, fontSize: 20, lineHeight: 28, fontWeight: '800' }, muted: { color: MUTED, fontSize: 17, lineHeight: 25, marginTop: 3 }, profile: { flexDirection: 'row', alignItems: 'center', gap: 18, padding: 20, borderWidth: 1, borderColor: BORDER, borderRadius: 16 }, avatar: { width: 88, height: 88, borderRadius: 44, backgroundColor: '#edf2ff', justifyContent: 'center', alignItems: 'center' }, avatarSmall: { width: 50, height: 50, borderRadius: 25 }, avatarDot: { color: BLUE, fontSize: 55 }, avatarDotSmall: { fontSize: 30 }, grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 }, menu: { width: '47.5%', aspectRatio: 1.12, borderWidth: 1, borderColor: BORDER, borderRadius: 16, justifyContent: 'center', alignItems: 'center', padding: 10 }, menuLabel: { color: NAVY, fontSize: 19, fontWeight: '800', textAlign: 'center', marginTop: 10 }, motto: { padding: 24, borderWidth: 1, borderColor: BORDER, borderRadius: 16 }, mottoText: { color: BLUE, fontSize: 22, lineHeight: 30, fontWeight: '900', fontStyle: 'italic', textAlign: 'center' }, nav: { flexDirection: 'row', minHeight: 76, borderTopWidth: 1, borderTopColor: BORDER, backgroundColor: '#fff' }, navItem: { flex: 1, alignItems: 'center', justifyContent: 'center' }, navIcon: { color: MUTED, fontSize: 23, fontWeight: '800' }, navLabel: { color: MUTED, fontSize: 12, fontWeight: '700', marginTop: 3 }, blue: { color: BLUE }, tabs: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: BORDER }, tab: { flex: 1, textAlign: 'center', padding: 13, color: NAVY, fontSize: 17 }, activeTab: { flex: 1, textAlign: 'center', padding: 13, color: BLUE, fontWeight: '800', fontSize: 17, borderBottomWidth: 4, borderBottomColor: BLUE }, listCard: { flexDirection: 'row', alignItems: 'center', gap: 24, minHeight: 145, padding: 22, borderWidth: 1, borderColor: BORDER, borderRadius: 16 }, section: { color: NAVY, fontSize: 22, fontWeight: '800', marginTop: 20, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: BORDER }, stat: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 17, borderBottomWidth: 1, borderBottomColor: BORDER }, statLabel: { color: NAVY, fontSize: 18 }, statValue: { color: NAVY, fontSize: 26, fontWeight: '800' }, green: { color: '#0b9d39' }, notice: { borderWidth: 1, borderColor: BORDER, borderRadius: 16, padding: 20, gap: 12 }, noticeHead: { flexDirection: 'row', alignItems: 'center', gap: 10 }, dot: { width: 20, height: 20, borderRadius: 4 }, badge: { color: '#fff', marginLeft: 'auto', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 18, fontWeight: '700' }, body: { color: NAVY, fontSize: 17, lineHeight: 26 }, file: { flexDirection: 'row', alignItems: 'center', gap: 18, minHeight: 116, padding: 20, borderWidth: 1, borderColor: BORDER, borderRadius: 16 }, bold: { fontWeight: '800' }, hint: { color: MUTED, fontSize: 14, lineHeight: 21 }, feedback: { padding: 14, borderRadius: 10, backgroundColor: '#eaf8ee', borderWidth: 1, borderColor: '#9bd8aa' }, feedbackText: { color: '#08752b', fontSize: 16, fontWeight: '600' }, info: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: BORDER }, infoLabel: { color: MUTED, fontSize: 14, fontWeight: '700' }, infoValue: { color: NAVY, fontSize: 18, marginTop: 4 }, entity: { flexDirection: 'row', alignItems: 'center', gap: 16, minHeight: 86, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: BORDER }, chevron: { color: BLUE, fontSize: 34 }, studentRow: { flexDirection: 'row', alignItems: 'center', gap: 18, minHeight: 76, borderBottomWidth: 1, borderBottomColor: BORDER }, checkbox: { width: 42, height: 42, lineHeight: 36, borderWidth: 3, borderColor: '#aab2c1', borderRadius: 8, color: '#fff', fontSize: 27, fontWeight: '800', textAlign: 'center' }, checked: { backgroundColor: '#0b9d39', borderColor: '#0b9d39' }, rank: { flexDirection: 'row', alignItems: 'center', gap: 22, minHeight: 94, borderBottomWidth: 1, borderBottomColor: BORDER }, rankNumber: { minWidth: 62, color: MUTED, fontSize: 38, fontWeight: '800' }, gold: { color: '#f2ad00' }, demo: { position: 'absolute', right: 14, bottom: 88, alignItems: 'flex-end' }, demoButton: { width: 48, height: 48, borderRadius: 24, backgroundColor: NAVY, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 6 }, demoButtonText: { color: '#fff', fontSize: 23, fontWeight: '800' }, demoList: { width: 235, maxHeight: 410, backgroundColor: '#fff', borderWidth: 1, borderColor: BORDER, borderRadius: 14, padding: 6, marginBottom: 8, elevation: 5 }, demoItem: { paddingVertical: 10, paddingHorizontal: 12 }, demoText: { color: NAVY, fontWeight: '600' },
+  safe: { flex: 1, backgroundColor: '#fff' }, app: { flex: 1, width: '100%', maxWidth: 640, alignSelf: 'center' }, flex: { flex: 1 }, page: { padding: 28, paddingBottom: 42, gap: 16 }, title: { color: NAVY, fontSize: 34, lineHeight: 42, fontWeight: '800', marginVertical: 8 }, center: { textAlign: 'center' }, subtitle: { color: NAVY, fontSize: 20, lineHeight: 28, marginBottom: 12 }, centerText: { color: NAVY, fontSize: 18, lineHeight: 27, textAlign: 'center' }, logo: { alignItems: 'center', marginTop: 12 }, logoIcon: { fontSize: 72 }, logoText: { color: BLUE, fontSize: 27, fontWeight: '900', fontStyle: 'italic' }, logoSub: { color: NAVY, fontWeight: '700', letterSpacing: 1 }, input: { minHeight: 58, borderWidth: 1, borderColor: BORDER, borderRadius: 12, paddingHorizontal: 18, paddingVertical: 12, color: NAVY, backgroundColor: '#fff', fontSize: 17, textAlignVertical: 'top' }, field: { gap: 8, marginBottom: 2 }, label: { color: NAVY, fontWeight: '700', fontSize: 17 }, primary: { minHeight: 58, borderRadius: 12, backgroundColor: BLUE, justifyContent: 'center', alignItems: 'center', marginTop: 8, padding: 12 }, primaryText: { color: '#fff', fontSize: 19, fontWeight: '800', textAlign: 'center' }, outline: { minHeight: 58, borderRadius: 12, borderWidth: 2, borderColor: BLUE, justifyContent: 'center', alignItems: 'center', padding: 12 }, outlineText: { color: BLUE, fontSize: 18, fontWeight: '800', textAlign: 'center' }, link: { color: BLUE, textAlign: 'center', paddingVertical: 5, fontSize: 16, fontWeight: '700' }, formHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, step: { color: BLUE, fontWeight: '700' }, back: { width: 44, height: 44, justifyContent: 'center' }, backText: { color: NAVY, fontSize: 44, lineHeight: 44 }, choice: { flexDirection: 'row', alignItems: 'center', gap: 20, minHeight: 160, padding: 24, borderWidth: 1, borderColor: BORDER, borderRadius: 16 }, selected: { borderWidth: 2, borderColor: BLUE }, icon: { color: BLUE, fontSize: 40, fontWeight: '800' }, cardTitle: { color: NAVY, fontSize: 20, lineHeight: 28, fontWeight: '800' }, muted: { color: MUTED, fontSize: 17, lineHeight: 25, marginTop: 3 }, profile: { flexDirection: 'row', alignItems: 'center', gap: 18, padding: 20, borderWidth: 1, borderColor: BORDER, borderRadius: 16 }, avatar: { width: 88, height: 88, borderRadius: 44, backgroundColor: '#edf2ff', justifyContent: 'center', alignItems: 'center' }, avatarSmall: { width: 50, height: 50, borderRadius: 25 }, avatarDot: { color: BLUE, fontSize: 55 }, avatarDotSmall: { fontSize: 30 }, grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 }, menu: { width: '47.5%', aspectRatio: 1.12, borderWidth: 1, borderColor: BORDER, borderRadius: 16, justifyContent: 'center', alignItems: 'center', padding: 10 }, menuLabel: { color: NAVY, fontSize: 19, fontWeight: '800', textAlign: 'center', marginTop: 10 }, motto: { padding: 24, borderWidth: 1, borderColor: BORDER, borderRadius: 16 }, mottoText: { color: BLUE, fontSize: 22, lineHeight: 30, fontWeight: '900', fontStyle: 'italic', textAlign: 'center' }, nav: { flexDirection: 'row', minHeight: 76, borderTopWidth: 1, borderTopColor: BORDER, backgroundColor: '#fff' }, navItem: { flex: 1, alignItems: 'center', justifyContent: 'center' }, navIcon: { color: MUTED, fontSize: 23, fontWeight: '800' }, navLabel: { color: MUTED, fontSize: 12, fontWeight: '700', marginTop: 3 }, blue: { color: BLUE }, tabs: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: BORDER }, tab: { flex: 1, textAlign: 'center', padding: 13, color: NAVY, fontSize: 17 }, activeTab: { flex: 1, textAlign: 'center', padding: 13, color: BLUE, fontWeight: '800', fontSize: 17, borderBottomWidth: 4, borderBottomColor: BLUE }, listCard: { flexDirection: 'row', alignItems: 'center', gap: 24, minHeight: 145, padding: 22, borderWidth: 1, borderColor: BORDER, borderRadius: 16 }, section: { color: NAVY, fontSize: 22, fontWeight: '800', marginTop: 20, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: BORDER }, stat: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 17, borderBottomWidth: 1, borderBottomColor: BORDER }, statLabel: { color: NAVY, fontSize: 18 }, statValue: { color: NAVY, fontSize: 26, fontWeight: '800' }, green: { color: '#0b9d39' }, notice: { borderWidth: 1, borderColor: BORDER, borderRadius: 16, padding: 20, gap: 12 }, noticeHead: { flexDirection: 'row', alignItems: 'center', gap: 10 }, dot: { width: 20, height: 20, borderRadius: 4 }, badge: { color: '#fff', marginLeft: 'auto', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 18, fontWeight: '700' }, body: { color: NAVY, fontSize: 17, lineHeight: 26 }, file: { flexDirection: 'row', alignItems: 'center', gap: 18, minHeight: 116, padding: 20, borderWidth: 1, borderColor: BORDER, borderRadius: 16 }, bold: { fontWeight: '800' }, hint: { color: MUTED, fontSize: 14, lineHeight: 21 }, feedback: { padding: 14, borderRadius: 10, backgroundColor: '#eaf8ee', borderWidth: 1, borderColor: '#9bd8aa' }, feedbackText: { color: '#08752b', fontSize: 16, fontWeight: '600' }, feedbackError: { backgroundColor: '#fdecec', borderColor: '#f1a9a9' }, feedbackTextError: { color: '#b30000' }, disabled: { opacity: 0.6 }, info: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: BORDER }, infoLabel: { color: MUTED, fontSize: 14, fontWeight: '700' }, infoValue: { color: NAVY, fontSize: 18, marginTop: 4 }, entity: { flexDirection: 'row', alignItems: 'center', gap: 16, minHeight: 86, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: BORDER }, chevron: { color: BLUE, fontSize: 34 }, studentRow: { flexDirection: 'row', alignItems: 'center', gap: 18, minHeight: 76, borderBottomWidth: 1, borderBottomColor: BORDER }, checkbox: { width: 42, height: 42, lineHeight: 36, borderWidth: 3, borderColor: '#aab2c1', borderRadius: 8, color: '#fff', fontSize: 27, fontWeight: '800', textAlign: 'center' }, checked: { backgroundColor: '#0b9d39', borderColor: '#0b9d39' }, rank: { flexDirection: 'row', alignItems: 'center', gap: 22, minHeight: 94, borderBottomWidth: 1, borderBottomColor: BORDER }, rankNumber: { minWidth: 62, color: MUTED, fontSize: 38, fontWeight: '800' }, gold: { color: '#f2ad00' }, demo: { position: 'absolute', right: 14, bottom: 88, alignItems: 'flex-end' }, demoButton: { width: 48, height: 48, borderRadius: 24, backgroundColor: NAVY, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 6 }, demoButtonText: { color: '#fff', fontSize: 23, fontWeight: '800' }, demoList: { width: 235, maxHeight: 410, backgroundColor: '#fff', borderWidth: 1, borderColor: BORDER, borderRadius: 14, padding: 6, marginBottom: 8, elevation: 5 }, demoItem: { paddingVertical: 10, paddingHorizontal: 12 }, demoText: { color: NAVY, fontWeight: '600' },
 });
